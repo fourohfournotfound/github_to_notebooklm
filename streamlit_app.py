@@ -174,6 +174,11 @@ class FilterConfig:
         '.idea', '.vscode', '.vs',
         'htmlcov', '.coverage', 'coverage',
         '.ipynb_checkpoints',
+        # Archive/backup folders
+        'archive', '_archive', 'archived', '_archived',
+        'backup', '_backup', 'backups', '_backups',
+        'old', '_old', 'deprecated', '_deprecated',
+        'tmp', '_tmp', 'temp', '_temp',
     })
     
     # Files to always skip
@@ -283,11 +288,23 @@ def process_zip_file(
             
             # Apply root path filter (from GitHub URL or manual input)
             if root_path_filter:
-                if not clean_path.startswith(root_path_filter):
+                # Normalize the filter path
+                filter_path = root_path_filter.strip('/')
+                
+                # Check if the clean_path starts with the filter
+                # Handle both "folder/file.py" and "folder" matching "folder"
+                if clean_path == filter_path:
+                    # Exact match on a file with same name as filter (unlikely but handle it)
+                    pass
+                elif clean_path.startswith(filter_path + '/'):
+                    # Path is inside the filter directory
+                    # Adjust the path to be relative to the filter
+                    clean_path = clean_path[len(filter_path) + 1:]
+                else:
+                    # Path doesn't match filter
                     stats['skipped_path_filter'] += 1
                     continue
-                # Adjust the path to be relative to the filter
-                clean_path = clean_path[len(root_path_filter):].lstrip('/')
+                
                 if not clean_path:
                     continue
             
@@ -610,11 +627,18 @@ def main():
         # Path filtering section
         st.header("📂 Path Filtering")
         
-        filter_tab1, filter_tab2, filter_tab3 = st.tabs([
-            "🌳 Browse Folders", 
-            "🔗 GitHub URL", 
-            "✏️ Manual Path"
-        ])
+        filter_method = st.radio(
+            "Filter method",
+            options=["all", "folders", "url", "manual"],
+            format_func=lambda x: {
+                "all": "📦 Include everything",
+                "folders": "🌳 Select folders to include/exclude", 
+                "url": "🔗 Filter by GitHub URL",
+                "manual": "✏️ Filter by manual path"
+            }[x],
+            horizontal=True,
+            index=0,
+        )
         
         root_path_filter = None
         include_paths = None
@@ -630,8 +654,8 @@ def main():
             folders = []
             files_by_folder = {}
         
-        with filter_tab1:
-            st.markdown("Select which top-level folders to include:")
+        if filter_method == "folders":
+            st.markdown("**Select which top-level folders to include:**")
             
             if folders:
                 # Get unique top-level folders
@@ -643,7 +667,7 @@ def main():
                     # Show root files count
                     root_files = files_by_folder.get('', [])
                     if root_files:
-                        st.caption(f"📄 {len(root_files)} files in repository root")
+                        st.caption(f"📄 {len(root_files)} files in repository root (always included)")
                     
                     # Create checkboxes for each top-level folder
                     included_folders = set()
@@ -678,14 +702,12 @@ def main():
                 else:
                     st.info("All files are in the repository root.")
             else:
-                st.info("Upload a ZIP to see folder structure.")
+                st.info("No subfolders found in ZIP.")
         
-        with filter_tab2:
+        elif filter_method == "url":
             st.markdown("""
             Paste a GitHub URL pointing to a specific folder, and only files 
             under that path will be included.
-            
-            **Example:** `https://github.com/user/repo/tree/main/src/mymodule`
             """)
             
             github_url = st.text_input(
@@ -697,13 +719,28 @@ def main():
             if github_url:
                 parsed_path = parse_github_url(github_url)
                 if parsed_path:
-                    st.success(f"✅ Will filter to: `{parsed_path}/`")
-                    root_path_filter = parsed_path
+                    # Verify the path exists in the ZIP
+                    matching_folders = [f for f in folders if f == parsed_path or f.startswith(parsed_path + '/')]
+                    if matching_folders:
+                        st.success(f"✅ Will filter to: `{parsed_path}/` ({len(matching_folders)} matching folders found)")
+                        root_path_filter = parsed_path
+                    else:
+                        st.warning(f"⚠️ Path `{parsed_path}/` not found in ZIP. Available top-level folders: {', '.join(sorted(set(Path(f).parts[0] for f in folders if f)))}")
                 else:
                     st.warning("Could not parse path from URL. Make sure it points to a folder (contains `/tree/branch/path`).")
+            else:
+                # Show available folders as hint
+                if folders:
+                    top_level = sorted(set(Path(f).parts[0] for f in folders if f))
+                    st.caption(f"Available folders: {', '.join(top_level[:10])}{'...' if len(top_level) > 10 else ''}")
         
-        with filter_tab3:
+        elif filter_method == "manual":
             st.markdown("Manually specify a path prefix to filter to:")
+            
+            # Show available folders as hint
+            if folders:
+                top_level = sorted(set(Path(f).parts[0] for f in folders if f))
+                st.caption(f"Available folders: {', '.join(top_level[:10])}{'...' if len(top_level) > 10 else ''}")
             
             manual_path = st.text_input(
                 "Path filter",
@@ -715,8 +752,13 @@ def main():
             if manual_path:
                 manual_path = manual_path.strip().strip('/')
                 if manual_path:
-                    st.info(f"Will filter to: `{manual_path}/`")
-                    root_path_filter = manual_path
+                    # Verify the path exists
+                    matching_folders = [f for f in folders if f == manual_path or f.startswith(manual_path + '/')]
+                    if matching_folders:
+                        st.success(f"✅ Will filter to: `{manual_path}/` ({len(matching_folders)} matching folders)")
+                        root_path_filter = manual_path
+                    else:
+                        st.warning(f"⚠️ Path `{manual_path}/` not found in ZIP.")
         
         # Process button
         st.header("🚀 Process")
